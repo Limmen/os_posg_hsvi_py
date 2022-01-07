@@ -68,8 +68,6 @@ def value_iteration(T: np.ndarray, num_states: int, num_actions: int, R: np.ndar
         best_action = np.argmax(A)
         # Always take the best action
         policy[s, best_action] = 1.0
-        # policy[s][2] = A[0]
-        # policy[s][3] = A[1]
 
     return V, policy
 

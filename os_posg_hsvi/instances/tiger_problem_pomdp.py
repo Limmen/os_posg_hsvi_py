@@ -1,3 +1,7 @@
+"""
+The tiger problem from (Kaelbling, Littman, Cassandra 1998)
+"""
+
 from typing import Tuple
 import numpy as np
 
@@ -78,5 +82,8 @@ def reward_matrix() -> np.ndarray:
 
 
 def initial_belief() -> np.ndarray:
-    return np.ndarray([0.5, 0.5])
+    """
+    :return: initial belief vector
+    """
+    return np.array([0.5, 0.5])
 

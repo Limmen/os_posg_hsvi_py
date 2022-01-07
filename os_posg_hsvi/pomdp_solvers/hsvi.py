@@ -1,14 +1,14 @@
 from typing import List, Tuple
 import numpy as np
 import pulp
-import pomdp.tiger_problem as tiger_problem
-import pomdp.vi as vi
-import random
+import mdp_solvers.vi as vi
+import common.pruning
 import math
 
 
-def hsvi(O: List, Z: List, R: List, T: List, A: List, S: List, gamma: float, b0: List,
-         epsilon: float, opt_alphas: List = None, lp : bool = False, prune_frequency : int = 10, verbose=False,
+def hsvi(O: np.ndarray, Z: np.ndarray, R: np.ndarray, T: np.ndarray, A: np.ndarray, S: np.ndarray,
+         gamma: float, b0: np.ndarray,
+         epsilon: float, lp : bool = False, prune_frequency : int = 10, verbose=False,
          simulation_frequency: int = 10, simulate_horizon : int = 10, number_of_simulations: int = 10):
     """
     Heuristic Search Value Iteration for POMDPs (Trey Smith and Reid Simmons, 2004)
@@ -22,7 +22,6 @@ def hsvi(O: List, Z: List, R: List, T: List, A: List, S: List, gamma: float, b0:
     :param gamma: discount factor
     :param b0: initial belief point
     :param epsilon: accuracy parameter
-    :param opt_alphas: optimal set of alphas to compare with
     :param lp: whether to use LP to compute upper bound values or SawTooth approximation
     :param prune_frequency: how often to prune the upper and lower bounds
     :param verbose: verbose flag for logging
@@ -31,15 +30,19 @@ def hsvi(O: List, Z: List, R: List, T: List, A: List, S: List, gamma: float, b0:
     :param number_of_simulations: number of simulations to estimate reward
     :return: None
     """
-    lower_bound = initialize_lower_bound(R=R,S=S,A=A,gamma=gamma)
-    upper_bound = initialize_upper_bound(T=T,A=A,S=S,gamma=gamma)
-    print(f"init LB:{lower_bound},\n init UB:{upper_bound}")
 
+    # Initialize upper and lower bound
+    lower_bound = initialize_lower_bound(R=R,S=S,A=A,gamma=gamma)
+    upper_bound = initialize_upper_bound(T=T,A=A,S=S,gamma=gamma, R=R)
+
+    # Initialize state
     w = width(lower_bound=lower_bound, upper_bound=upper_bound, b=b0, S=S, lp=lp)
     iteration = 0
     cumulative_r = 0
 
+    # HSVI iterations
     while w > epsilon:
+
         lower_bound, upper_bound = explore(
             b=b0, epsilon=epsilon, t=0, lower_bound=lower_bound, upper_bound=upper_bound,
             gamma=gamma, S=S, O=O, R=R, T=T, A=A,Z=Z, lp=lp)
@@ -49,13 +52,13 @@ def hsvi(O: List, Z: List, R: List, T: List, A: List, S: List, gamma: float, b0:
             r = 0
             for i in range(number_of_simulations):
                 r += simulate(horizon=simulate_horizon, b0=b0, lower_bound=lower_bound, Z=Z,
-                                        R=R, gamma=gamma, T=T, A=A, O=O)
+                                        R=R, gamma=gamma, T=T, A=A, O=O, S=S)
             cumulative_r = r/number_of_simulations
 
         if iteration > 1 and iteration % prune_frequency == 0:
             size_before_lower_bound=len(lower_bound)
             size_before_upper_bound = len(upper_bound[0])
-            lower_bound = prune_lower_bound(lower_bound=lower_bound, S=S)
+            lower_bound = common.pruning.prune_lower_bound(lower_bound=lower_bound, S=S)
             upper_bound = prune_upper_bound(upper_bound=upper_bound, S=S, lp=lp)
             if verbose:
                 print(f"Pruning, LB before:{size_before_lower_bound},after:{len(lower_bound)}, "
@@ -63,24 +66,23 @@ def hsvi(O: List, Z: List, R: List, T: List, A: List, S: List, gamma: float, b0:
 
         initial_belief_V_star_upper = upper_bound_value(upper_bound=upper_bound, b=b0, S=S, lp=lp)
         initial_belief_V_star_lower = lower_bound_value(lower_bound=lower_bound, b=b0, S=S)
-        optimal_V_star = None
-        if opt_alphas is not None:
-            optimal_V_star = lower_bound_value(lower_bound=opt_alphas, b=b0, S=S)
         iteration += 1
 
         print(f"iteration: {iteration}, width: {w}, epsilon: {epsilon}, R: {cumulative_r}, "
               f"UB size:{len(upper_bound[0])}, LB size:{len(lower_bound)}")
         if verbose:
             print(f"Upper V*[b0]: {initial_belief_V_star_upper}, "
-                  f"Lower V*[b0]:{initial_belief_V_star_lower}, V*[b0]:{optimal_V_star}")
+                  f"Lower V*[b0]:{initial_belief_V_star_lower}")
 
-    with open('../aleph_t.npy', 'wb') as f:
+
+    # Save the computed alpha vectors that represent the value function
+    with open('./aleph_t.npy', 'wb') as f:
         np.save(f, np.asarray(list(lower_bound)))
 
 
-def explore(b : List, epsilon : float, t : int, lower_bound : List, upper_bound: Tuple[List, List],
-            gamma: float, S: List, O: List, Z: List, R: List, T: List, A: List, lp: bool) \
-        -> Tuple[List, Tuple[List, List]]:
+def explore(b : np.ndarray, epsilon : float, t : int, lower_bound : List, upper_bound: Tuple[List, List],
+            gamma: float, S: np.ndarray, O: np.ndarray, Z: np.ndarray, R: np.ndarray,
+            T: np.ndarray, A: np.ndarray, lp: bool) -> Tuple[List, Tuple[List, List]]:
     """
     Explores the POMDP tree
 
@@ -109,17 +111,17 @@ def explore(b : List, epsilon : float, t : int, lower_bound : List, upper_bound:
         upper_Q = q(b=b, a=a, lower_bound=lower_bound, upper_bound=upper_bound, S=S, O=O, Z=Z,
                     R=R, gamma=gamma, T=T, upper=True, lp=lp)
         a_Q_vals.append(upper_Q)
-    a_star = np.argmax(np.array(a_Q_vals))
+    a_star = int(np.argmax(np.array(a_Q_vals)))
 
     # Determine o*
     o_vals = []
     for o in O:
         new_belief = next_belief(o=o, a=a_star, b=b, S=S, Z=Z, T=T)
-        o_val = p_o_given_b_a(o=o, b=b, a=a_star, S=S, Z=Z) * \
+        o_val = p_o_given_b_a(o=o, b=b, a=a_star, S=S, Z=Z, T=T) * \
                 excess(lower_bound=lower_bound,upper_bound=upper_bound,b=new_belief,S=S,epsilon=epsilon,
                        gamma=gamma,t=(t+1), lp=lp)
         o_vals.append(o_val)
-    o_star = np.argmax(np.array(o_vals))
+    o_star = int(np.argmax(np.array(o_vals)))
 
     b_prime = next_belief(o=o_star, a=a_star, b=b, S=S, Z=Z, T=T)
     lower_bound, upper_bound = explore(b=b_prime,epsilon=epsilon,t=t+1,lower_bound=lower_bound,
@@ -132,7 +134,7 @@ def explore(b : List, epsilon : float, t : int, lower_bound : List, upper_bound:
     return lower_bound, upper_bound
 
 
-def initialize_lower_bound(R: List, S: List, A: List, gamma: float) -> List:
+def initialize_lower_bound(R: np.ndarray, S: np.ndarray, A: np.ndarray, gamma: float) -> List:
     """
     Initializes the lower bound
 
@@ -156,13 +158,15 @@ def initialize_lower_bound(R: List, S: List, A: List, gamma: float) -> List:
     return lower_bound
 
 
-def initialize_upper_bound(T: List, A: List, S: List, gamma: float) -> Tuple[List, List]:
+def initialize_upper_bound(T: np.ndarray, A: np.ndarray, S: np.ndarray, gamma: float, R: np.ndarray) \
+        -> Tuple[List, List]:
     """
     Initializes the upper bound
 
     :param T: the transition tensor
     :param A: the set of actions
     :param S: the set of states
+    :param R: the reward tensor
     :param gamma: the discount factor
     :return: the initialized upper bound
     """
@@ -175,7 +179,7 @@ def initialize_upper_bound(T: List, A: List, S: List, gamma: float) -> Tuple[Lis
     return (point_set, point_set.copy())
 
 
-def generate_corner_belief(s: int, S: List):
+def generate_corner_belief(s: int, S: np.ndarray):
     """
     Generate the corner of the simplex that corresponds to being in some state with probability 1
 
@@ -188,8 +192,9 @@ def generate_corner_belief(s: int, S: List):
     return b
 
 
-def local_updates(lower_bound: List, upper_bound: Tuple[List, List], b: List, A: List, S: List,
-                  O: List, R: List, T: List, gamma: float, Z: List, lp: bool) -> Tuple[List, Tuple[List, List]]:
+def local_updates(lower_bound: List, upper_bound: Tuple[List, List], b: np.ndarray, A: np.ndarray, S: np.ndarray,
+                  O: np.ndarray, R: np.ndarray, T: np.ndarray, gamma: float, Z: np.ndarray, lp: bool) \
+        -> Tuple[List, Tuple[List, List]]:
     """
     Perform local updates to the upper and  lower bounds for the given belief in the heuristic-search-exploration
 
@@ -212,8 +217,9 @@ def local_updates(lower_bound: List, upper_bound: Tuple[List, List], b: List, A:
     return new_lower_bound, new_upper_bound
 
 
-def local_upper_bound_update(upper_bound: Tuple[List, List], b: List, A: List, S: List, O: List, R: List, T: List,
-                             gamma: float, Z: List, lp: bool) -> Tuple[List, List]:
+def local_upper_bound_update(upper_bound: Tuple[List, List], b: np.ndarray, A: np.ndarray,
+                             S: np.ndarray, O: np.ndarray, R: np.ndarray, T: np.ndarray,
+                             gamma: float, Z: np.ndarray, lp: bool) -> Tuple[List, List]:
     """
     Performs a local update to the upper bound during the heuristic-search exploration
 
@@ -237,7 +243,7 @@ def local_upper_bound_update(upper_bound: Tuple[List, List], b: List, A: List, S
     return upper_bound
 
 
-def update_corner_points(corner_points: List, new_point: Tuple[List, float]) -> List:
+def update_corner_points(corner_points: List, new_point: Tuple[np.ndarray, float]) -> List:
     """
     (Maybe) update the corner points of the upper bound
 
@@ -258,8 +264,9 @@ def update_corner_points(corner_points: List, new_point: Tuple[List, float]) -> 
     return new_corner_points
 
 
-def local_lower_bound_update(lower_bound: List, b: List, A: List, O: List, Z: List, S: List,
-                             T: List, R: List, gamma: float) -> List:
+def local_lower_bound_update(lower_bound: List, b: np.ndarray, A: np.ndarray, O: np.ndarray,
+                             Z: np.ndarray, S: np.ndarray,
+                             T: np.ndarray, R: np.ndarray, gamma: float) -> List:
     """
     Performs a local update to the lower bound given a belief point in the heuristic search
 
@@ -280,8 +287,8 @@ def local_lower_bound_update(lower_bound: List, b: List, A: List, O: List, Z: Li
     return lower_bound
 
 
-def lower_bound_backup(lower_bound: List, b: List, A: List, O: List, Z: List, S: List,
-                       T: List, R: List, gamma: float) -> List:
+def lower_bound_backup(lower_bound: List, b: np.ndarray, A: np.ndarray, O: np.ndarray, Z: np.ndarray, S: np.ndarray,
+                       T: np.ndarray, R: np.ndarray, gamma: float) -> np.ndarray:
     """
     Generates a new alpha-vector for the lower bound
 
@@ -335,8 +342,9 @@ def lower_bound_backup(lower_bound: List, b: List, A: List, O: List, Z: List, S:
     return beta
 
 
-def upper_bound_backup(upper_bound: Tuple[List, List], b: List, A: List, S: List, O: List, Z: List, R: List, T: List,
-                       gamma: float, lp: bool) -> Tuple[List, float]:
+def upper_bound_backup(upper_bound: Tuple[List, List], b: np.ndarray, A: np.ndarray, S: np.ndarray,
+                       O: np.ndarray, Z: np.ndarray, R: np.ndarray, T: np.ndarray,
+                       gamma: float, lp: bool) -> Tuple[np.ndarray, float]:
     """
     Adds a point to the upper bound
 
@@ -370,7 +378,7 @@ def upper_bound_backup(upper_bound: Tuple[List, List], b: List, A: List, S: List
     return b, new_val
 
 
-def lp_convex_hull_projection_lp(upper_bound : Tuple[List, List], b: List, S: List) -> float:
+def lp_convex_hull_projection_lp(upper_bound : Tuple[List, List], b: np.ndarray, S: np.ndarray) -> float:
     """
     Reference: (Hauskreht 2000)
 
@@ -413,7 +421,10 @@ def lp_convex_hull_projection_lp(upper_bound : Tuple[List, List], b: List, S: Li
         lambda_weights_sum += lamb[i]
     problem += lambda_weights_sum == 1, "ConvexHullWeightsSumConstraint"
 
+    # Solve
     problem.solve(pulp.PULP_CBC_CMD(msg=0))
+
+    # Obtain solution
     projected_lamb_coefficients = []
     belief_value = 0
     for i in range(len(upper_bound_point_set)):
@@ -423,7 +434,7 @@ def lp_convex_hull_projection_lp(upper_bound : Tuple[List, List], b: List, S: Li
     return belief_value
 
 
-def approximate_projection_sawtooth(upper_bound: Tuple[List, List], b :List) -> float:
+def approximate_projection_sawtooth(upper_bound: Tuple[List, List], b :np.ndarray, S: np.ndarray) -> float:
     """
     Reference: (Hauskreht 2000)
 
@@ -432,13 +443,11 @@ def approximate_projection_sawtooth(upper_bound: Tuple[List, List], b :List) -> 
 
     :param upper_bound: the upper bound
     :param b: the belief point
+    :param S: the set of states
     :return: the value of the belief point
     """
     upper_bound_point_set, corner_points = upper_bound
     alpha_corner = np.array(corner_points)[:,1]
-    # corner_points_belief_value = alpha_corner.dot(np.array(b))
-    # non_zero_belief_states = list(filter(lambda x: b[x]>0, range(len(b))))
-    # zero_belief_states = list(filter(lambda x: b[x]==0, range(len(b))))
 
     # min_val = corner_points_belief_value
     interior_belief_values = []
@@ -448,7 +457,8 @@ def approximate_projection_sawtooth(upper_bound: Tuple[List, List], b :List) -> 
     return min(interior_belief_values)
 
 
-def interior_point_belief_val(interior_point: Tuple[List, float], b: List, alpha_corner: List, S: List) -> float:
+def interior_point_belief_val(interior_point: Tuple[np.ndarray, float], b: np.ndarray,
+                              alpha_corner: np.ndarray, S: np.ndarray) -> float:
     """
     Computes the value induced on the belief point b projected onto the convex hull by a given interior belief point
 
@@ -475,7 +485,7 @@ def interior_point_belief_val(interior_point: Tuple[List, float], b: List, alpha
     return interior_alpha_corner_dot + min_ratio*(interior_point[1]-interior_alpha_corner_dot)
 
 
-def upper_bound_value(upper_bound: Tuple[List, List], b: List, S: List, lp : bool = False) -> float:
+def upper_bound_value(upper_bound: Tuple[List, List], b: np.ndarray, S: np.ndarray, lp : bool = False) -> float:
     """
     Computes the upper bound value of a given belief point
 
@@ -489,10 +499,10 @@ def upper_bound_value(upper_bound: Tuple[List, List], b: List, S: List, lp : boo
     if lp:
         return lp_convex_hull_projection_lp(upper_bound=upper_bound, b=b, S=S)
     else:
-        return approximate_projection_sawtooth(upper_bound=upper_bound, b=b)
+        return approximate_projection_sawtooth(upper_bound=upper_bound, b=b, S=S)
 
 
-def lower_bound_value(lower_bound: List, b: List, S: List) -> float:
+def lower_bound_value(lower_bound: List, b: np.ndarray, S: np.ndarray) -> float:
     """
     Computes the lower bound value of a given belief point
 
@@ -510,7 +520,7 @@ def lower_bound_value(lower_bound: List, b: List, S: List) -> float:
     return max(alpha_vals)
 
 
-def next_belief(o: int, a: int, b: List, S: List, Z: List, T: List) -> List:
+def next_belief(o: int, a: int, b: np.ndarray, S: np.ndarray, Z: np.ndarray, T: np.ndarray) -> np.ndarray:
     """
     Computes the next belief using a Bayesian filter
 
@@ -529,7 +539,7 @@ def next_belief(o: int, a: int, b: List, S: List, Z: List, T: List) -> List:
     return b_prime
 
 
-def bayes_filter(s_prime: int, o: int, a: int, b: List, S: List, Z: List, T: List) -> float:
+def bayes_filter(s_prime: int, o: int, a: int, b: np.ndarray, S: np.ndarray, Z: np.ndarray, T: np.ndarray) -> float:
     """
     A Bayesian filter to compute the belief of being in s_prime when observing o after taking action a in belief b
 
@@ -556,7 +566,7 @@ def bayes_filter(s_prime: int, o: int, a: int, b: List, S: List, Z: List, T: Lis
     return b_prime
 
 
-def p_o_given_b_a(o: int, b: List, a: int, S: List, Z: List) -> float:
+def p_o_given_b_a(o: int, b: np.ndarray, a: int, S: np.ndarray, Z: np.ndarray, T: np.ndarray) -> float:
     """
     Computes P[o|a,b]
 
@@ -565,6 +575,7 @@ def p_o_given_b_a(o: int, b: List, a: int, S: List, Z: List) -> float:
     :param a: the action
     :param S: the set of states
     :param Z: the observation tensor
+    :param T: the transition tensor
     :return: the probability of observing o when taking action a in belief point b
     """
     prob = 0
@@ -575,7 +586,8 @@ def p_o_given_b_a(o: int, b: List, a: int, S: List, Z: List) -> float:
     return prob
 
 
-def excess(lower_bound: List, upper_bound: Tuple[List, List], b: List, S: List, epsilon: float, gamma : float, t: int,
+def excess(lower_bound: List, upper_bound: Tuple[List, List], b: np.ndarray,
+           S: np.ndarray, epsilon: float, gamma : float, t: int,
            lp: bool) -> float:
     """
     Computes the excess uncertainty  (Trey Smith and Reid Simmons, 2004)
@@ -597,7 +609,7 @@ def excess(lower_bound: List, upper_bound: Tuple[List, List], b: List, S: List, 
         return w - epsilon*math.pow(gamma, -(t))
 
 
-def width(lower_bound: List, upper_bound: Tuple[List,List], b: List, S: List, lp: bool) -> float:
+def width(lower_bound: List, upper_bound: Tuple[List,List], b: np.ndarray, S: np.ndarray, lp: bool) -> float:
     """
     Computes the bounds width (Trey Smith and Reid Simmons, 2004)
 
@@ -613,8 +625,8 @@ def width(lower_bound: List, upper_bound: Tuple[List,List], b: List, S: List, lp
     return ub-lb
 
 
-def q_hat_interval(b: List, a: int, S: List, O: List, Z: List, R: List,
-                   T: List, gamma: float, lower_bound: List, upper_bound: Tuple[List, List], lp: float) -> float:
+def q_hat_interval(b: np.ndarray, a: int, S: np.ndarray, O: np.ndarray, Z: np.ndarray, R: np.ndarray,
+                   T: np.ndarray, gamma: float, lower_bound: List, upper_bound: Tuple[List, List], lp: bool) -> List:
     """
     Computes the interval (Trey Smith and Reid Simmons, 2004)
 
@@ -638,8 +650,8 @@ def q_hat_interval(b: List, a: int, S: List, O: List, Z: List, R: List,
     return [lower_Q, upper_Q]
 
 
-def q(b: List, a: int, lower_bound: List, upper_bound: Tuple[List, List], S: List, O: List,
-      Z: List, R: List, gamma: float, T: List, upper : bool = True, lp : bool = False) -> float:
+def q(b: np.ndarray, a: int, lower_bound: List, upper_bound: Tuple[List, List], S: np.ndarray, O: np.ndarray,
+      Z: np.ndarray, R: np.ndarray, gamma: float, T: np.ndarray, upper : bool = True, lp : bool = False) -> float:
     """
     Applies the Bellman equation to compute Q values
 
@@ -674,7 +686,7 @@ def q(b: List, a: int, lower_bound: List, upper_bound: Tuple[List, List], S: Lis
     return Q_val
 
 
-def check_duplicate(alpha_set: List, alpha: List) -> bool:
+def check_duplicate(alpha_set: List, alpha: np.ndarray) -> bool:
     """
     Check whether alpha vector av is already in set a
 
@@ -688,104 +700,7 @@ def check_duplicate(alpha_set: List, alpha: List) -> bool:
     return False
 
 
-def prune_lower_bound(lower_bound: List, S: List) -> List:
-    """
-    Lark's filtering algorithm to prune the lower bound, (Cassandra, Littman, Zhang, 1997)
-
-    :param lower_bound: the current lower bound
-    :param S: the set of states
-    :return: the pruned lower bound
-    """
-    # dirty set
-    F = set()
-    for i in range(len(lower_bound)):
-        F.add(tuple(lower_bound[i]))
-
-    # clean set
-    Q = []
-
-    for s in S:
-        max_alpha_val_s = -np.inf
-        max_alpha_vec_s = None
-        for alpha_vec in F:
-            if alpha_vec[s] > max_alpha_val_s:
-                max_alpha_val_s = alpha_vec[s]
-                max_alpha_vec_s = alpha_vec
-        if max_alpha_vec_s is not None and len(F) > 0:
-            # Q.update({max_alpha_vec_s})
-            Q.append(np.array(list(max_alpha_vec_s)))
-            F.remove(max_alpha_vec_s)
-    while F:
-        alpha_vec = F.pop() # just to get a reference
-        F.add(alpha_vec)
-        x = check_dominance_lp(alpha_vec, Q)
-        if x is None:
-            F.remove(alpha_vec)
-        else:
-            max_alpha_val = -np.inf
-            max_alpha_vec = None
-            for phi in F:
-                phi_vec = np.array(list(phi))
-                if phi_vec.dot(alpha_vec) > max_alpha_val:
-                    max_alpha_val = phi_vec.dot(alpha_vec)
-                    max_alpha_vec = phi_vec
-            Q.append(max_alpha_vec)
-            F.remove(tuple(list(max_alpha_vec)))
-    return Q
-
-
-def check_dominance_lp(alpha_vec: List, Q: List):
-    """
-    Uses LP to check whether a given alpha vector is dominated or not (Cassandra, Littman, Zhang, 1997)
-
-    :param alpha_vec: the alpha vector to check
-    :param Q: the set of vectors to check dominance against
-    :return: None if dominated, otherwise return the vector
-    """
-
-    problem = pulp.LpProblem("AlphaDominance", pulp.LpMaximize)
-
-    # --- Decision Variables ----
-
-    # x
-    x_vars = []
-    for i in range(len(alpha_vec)):
-        x_var_i = pulp.LpVariable("x_" + str(i), lowBound=0, upBound=1, cat=pulp.LpContinuous)
-        x_vars.append(x_var_i)
-
-    # delta
-    delta = pulp.LpVariable("delta", lowBound=None, upBound=None, cat=pulp.LpContinuous)
-
-    # --- Objective Function ----
-    problem += delta, "maximize delta"
-
-    # --- The constraints ---
-
-    # x sum to 1
-    x_sum = 0
-    for i in range(len(x_vars)):
-        x_sum += x_vars[i]
-    problem += x_sum == 1, "XSumWeights"
-
-    # alpha constraints
-    for i, alpha_vec_prime in enumerate(Q):
-        x_dot_alpha_sum = 0
-        x_dot_alpha_prime_sum = 0
-        for j in range(len(alpha_vec)):
-            x_dot_alpha_sum += x_vars[j]*alpha_vec[j]
-            x_dot_alpha_prime_sum += x_vars[j] * alpha_vec_prime[j]
-        problem += x_dot_alpha_sum >= delta + x_dot_alpha_prime_sum, "alpha_constraint _" + str(i)
-
-    problem.solve(pulp.PULP_CBC_CMD(msg=0))
-
-    delta = delta.varValue
-    if delta > 0:
-        return alpha_vec
-    else:
-        return None
-
-
-def prune_upper_bound(upper_bound: Tuple[List, List], S: List, lp: bool) -> Tuple[List, List]:
+def prune_upper_bound(upper_bound: Tuple[List, List], S: np.ndarray, lp: bool) -> Tuple[List, List]:
     """
     Prunes the points in the upper bound
 
@@ -806,8 +721,9 @@ def prune_upper_bound(upper_bound: Tuple[List, List], S: List, lp: bool) -> Tupl
     return pruned_upper_bound_point_set, corner_points
 
 
-def simulate(horizon: int, b0: List, lower_bound: List, Z: List, R: List, gamma: float, T: List, A: List,
-             O: List) -> float:
+def simulate(horizon: int, b0: List, lower_bound: List, Z: np.ndarray, R: np.ndarray, gamma: float,
+             T: np.ndarray, A: np.ndarray,
+             O: np.ndarray, S: np.ndarray) -> float:
     """
     Simulates the POMDP to estimate the reward of the greedy policy with respect to the value function represented
     by the lower bound
@@ -821,6 +737,7 @@ def simulate(horizon: int, b0: List, lower_bound: List, Z: List, R: List, gamma:
     :param T: the transition operator
     :param A: the action set
     :param O: the observation set
+    :param S: the set of states
     :return: the cumulative discounted reward
     """
     t = 0
@@ -848,28 +765,3 @@ def simulate(horizon: int, b0: List, lower_bound: List, Z: List, R: List, gamma:
 
     return cumulative_r
 
-
-def set_seed(seed: float) -> None:
-    """
-    Deterministic seed config
-
-    :param seed: random seed for the PRNG
-    :return: None
-    """
-    random.seed(seed)
-    np.random.seed(seed)
-
-
-if __name__ == '__main__':
-    Z = tiger_problem.observation_matrix()
-    R = tiger_problem.reward_matrix()
-    T = tiger_problem.transition_tensor()
-    A, _ = tiger_problem.actions()
-    O, _ = tiger_problem.observations()
-    S, _ = tiger_problem.states()
-    b0 = tiger_problem.initial_belief()
-    set_seed(1521245)
-    optimal_alphas = tiger_problem.optimal_alphas_2()
-    hsvi(O=O,Z=Z,R=R,T=T,A=A,S=S,gamma=0.9, b0=b0, epsilon=0.01, opt_alphas=optimal_alphas,
-         lp=False,prune_frequency=100, verbose=False, simulation_frequency=1, simulate_horizon=100,
-         number_of_simulations=50)

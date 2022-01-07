@@ -4,7 +4,7 @@ import pulp
 from instances import stopping_intrusion_game_os_posg as stopping_game
 from sg_solvers import shapley_iteration_fully_observed as shapley
 from mdp_solvers import vi as vi
-import random
+import common.pruning
 import itertools
 
 
@@ -42,7 +42,7 @@ def hsvi_os_posg(O: np.ndarray, Z: np.ndarray, R: np.ndarray, T: np.ndarray, A1:
     if verbose:
         print(f"init LB:{lower_bound},\n init UB:{upper_bound}")
 
-    delta = compute_delta(S=S, A1=A1, A2=A2, gamma=gamma)
+    delta = compute_delta(S=S, A1=A1, A2=A2, gamma=gamma, R=R)
 
     if D is None:
         D = sample_D(gamma=gamma, epsilon=epsilon, delta=delta)
@@ -68,13 +68,13 @@ def hsvi_os_posg(O: np.ndarray, Z: np.ndarray, R: np.ndarray, T: np.ndarray, A1:
         if iteration > 1 and iteration % prune_frequency == 0:
             size_before_lower_bound = len(lower_bound)
             size_before_upper_bound = len(upper_bound)
-            lower_bound = prune_lower_bound(lower_bound=lower_bound, S=S)
-            upper_bound = prune_upper_bound(upper_bound=upper_bound, delta=delta)
+            lower_bound = common.pruning.prune_lower_bound(lower_bound=lower_bound, S=S)
+            upper_bound = prune_upper_bound(upper_bound=upper_bound, delta=delta, S=S)
             if verbose:
                 print(f"Pruning, LB before:{size_before_lower_bound},after:{len(lower_bound)}, "
                       f"UB before: {size_before_upper_bound},after:{len(upper_bound)}")
 
-        initial_belief_V_star_upper = upper_bound_value(upper_bound=upper_bound, b=b0, delta=delta)
+        initial_belief_V_star_upper = upper_bound_value(upper_bound=upper_bound, b=b0, delta=delta, S=S)
         initial_belief_V_star_lower = lower_bound_value(lower_bound=lower_bound, b=b0, S=S)
         iteration += 1
 
@@ -84,11 +84,12 @@ def hsvi_os_posg(O: np.ndarray, Z: np.ndarray, R: np.ndarray, T: np.ndarray, A1:
             print(f"Upper V*[b0]: {initial_belief_V_star_upper}, "
                   f"Lower V*[b0]:{initial_belief_V_star_lower}")
 
+    # Save the alpha vectors that represent V*
     with open('aleph_t.npy', 'wb') as f:
         np.save(f, lower_bound)
 
 
-def compute_delta(S: np.ndarray, A1: np.ndarray, A2: np.ndarray, gamma: float) -> float:
+def compute_delta(S: np.ndarray, A1: np.ndarray, A2: np.ndarray, gamma: float, R: np.ndarray) -> float:
     """
     The optimal value function V* of a OS-POSG is delta-Lipschitz continuous.
     To prove convergence of HSVI, we require that V_UB and V_LB are delta-Lipschitz continuous as well.
@@ -99,6 +100,7 @@ def compute_delta(S: np.ndarray, A1: np.ndarray, A2: np.ndarray, gamma: float) -
     :param A1: the set of actions of player 1
     :param A2: the set of actions of player 2
     :param gamma: the discount factor
+    :param R: the reward tensor
     :return: the delta value
     """
     temp = []
@@ -131,7 +133,8 @@ def sample_D(gamma: float, epsilon: float, delta: float) -> float:
 
 def obtain_equilibrium_strategy_profiles_in_stage_game(
         lower_bound: List, upper_bound: List, b: np.ndarray, delta: float,
-        S: np.ndarray, A1: np.ndarray, A2: np.ndarray, gamma: float) \
+        S: np.ndarray, A1: np.ndarray, A2: np.ndarray, gamma: float, R: np.ndarray, O: np.ndarray,
+        Z: np.ndarray, T: np.ndarray) \
         -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """
     Computes equilibrium strategy profiles in the stage game constructed from the lower and upper bound value functions
@@ -143,6 +146,10 @@ def obtain_equilibrium_strategy_profiles_in_stage_game(
     :param S: the set of states
     :param A1: the set of acitons of player 1
     :param A2: the set of actions of player 2
+    :param R: the reward tensor
+    :param O: the set of observations
+    :param Z: the observation tensor
+    :param T: the transition tensor
     :param gamma: the discount factor
     :return: Equilibrium strategy profiles in the upper and lower bound stage games
     """
@@ -157,6 +164,7 @@ def obtain_equilibrium_strategy_profiles_in_stage_game(
         policy[0][p[0]] = 1
         policy[1][p[1]] = 1
         p2_policies.append(policy)
+    p2_policies = np.array(p2_policies)
 
     for a1 in A1:
         for i, pi_2 in enumerate(p2_policies):
@@ -169,10 +177,11 @@ def obtain_equilibrium_strategy_profiles_in_stage_game(
                 a2 = int(np.argmax(pi_2[s]))
                 immediate_reward += b[s] * R[a1][a2][s]
                 for o in O:
-                    new_belief = next_belief(o=o, a1=a1, b=b, S=S, Z=Z, T=T, pi_2=pi_2)
-                    upper_bound_new_belief_value = upper_bound_value(upper_bound=upper_bound, b=new_belief, delta=delta)
+                    new_belief = next_belief(o=o, a1=a1, b=b, S=S, Z=Z, T=T, pi_2=pi_2, A2=A2)
+                    upper_bound_new_belief_value = upper_bound_value(upper_bound=upper_bound, b=new_belief,
+                                                                     delta=delta, S=S)
                     lower_bound_new_belief_value = lower_bound_value(lower_bound=lower_bound, b=b, S=S)
-                    prob = p_o_given_b_a1_a2(o=o, b=b, a1=a1, a2=a2, S=S, Z=Z)
+                    prob = p_o_given_b_a1_a2(o=o, b=b, a1=a1, a2=a2, S=S, Z=Z, T=T)
                     expected_future_reward_upper_bound += prob * upper_bound_new_belief_value
                     expected_future_reward_lower_bound += prob * lower_bound_new_belief_value
 
@@ -310,12 +319,13 @@ def explore(b: np.ndarray, epsilon: float, t: int, lower_bound: List, upper_boun
     """
     pi_1_upper_bound, pi_2_upper_bound, pi_1_lower_bound, pi_2_lower_bound = \
         obtain_equilibrium_strategy_profiles_in_stage_game(lower_bound=lower_bound, upper_bound=upper_bound, b=b,
-                                                           delta=delta, S=S, A1=A1, A2=A2, gamma=gamma)
+                                                           delta=delta, S=S, A1=A1, A2=A2, gamma=gamma, R=R,
+                                                           O=O, Z=Z, T=T)
 
     a_star, o_star, weighted_excess, excess_val, w, new_belief = choose_a_o_for_exploration(
         A1=A1, O=O, t=t + 1, b=b, pi_1_upper_bound=pi_1_upper_bound,
         pi_2_lower_bound=pi_2_lower_bound, lower_bound=lower_bound,
-        upper_bound=upper_bound, gamma=gamma, epsilon=epsilon, delta=delta, D=D)
+        upper_bound=upper_bound, gamma=gamma, epsilon=epsilon, delta=delta, D=D, S=S, Z=Z, A2=A2, T=T)
 
     print(f"weighted_excess: {weighted_excess}, w:{w}, excess_val:{excess_val}")
 
@@ -331,10 +341,11 @@ def explore(b: np.ndarray, epsilon: float, t: int, lower_bound: List, upper_boun
     return lower_bound, upper_bound
 
 
-def choose_a_o_for_exploration(A1: np.ndarray, O: np.ndarray, t: int, b: np.ndarray, pi_1_upper_bound: List,
-                               pi_2_lower_bound: List,
+def choose_a_o_for_exploration(A1: np.ndarray, O: np.ndarray, t: int, b: np.ndarray, pi_1_upper_bound: np.ndarray,
+                               pi_2_lower_bound: np.ndarray,
                                lower_bound: List, upper_bound: List, gamma: float, epsilon: float,
-                               delta: float, D: float) -> Tuple[int, int, float, float, float, np.ndarray]:
+                               delta: float, D: float, S: np.ndarray, Z: np.ndarray, A2: np.ndarray, T: np.ndarray) \
+        -> Tuple[int, int, float, float, float, np.ndarray]:
     """
     Selects the action a* and observation * for exploration according to the heuristic:
 
@@ -354,6 +365,10 @@ def choose_a_o_for_exploration(A1: np.ndarray, O: np.ndarray, t: int, b: np.ndar
     :param epsilon: the epsilon accuracy parameter
     :param delta: the Lipschitz-continuity parameter
     :param D: the neighboorhood parameter
+    :param S: the set of states
+    :param Z: the observation tensor
+    :param A2: the set of actions of player 2
+    :param T: the transition tensor
     :return: a*,o*,weighted_excess(a*,o*), excess(a*,o*), width(a*,o*), b_prime(a*,o*)
     """
     weighted_excess_values = []
@@ -363,13 +378,10 @@ def choose_a_o_for_exploration(A1: np.ndarray, O: np.ndarray, t: int, b: np.ndar
     new_beliefs = []
     for a1 in A1:
         for o in O:
-            weighted_excess_val, excess_val, w, new_belief = weighted_excess_gap(lower_bound=lower_bound,
-                                                                                 upper_bound=upper_bound, a1=a1, o=o,
-                                                                                 b=b, t=t,
-                                                                                 gamma=gamma,
-                                                                                 pi_1_upper_bound=pi_1_upper_bound,
-                                                                                 pi_2_lower_bound=pi_2_lower_bound,
-                                                                                 epsilon=epsilon, delta=delta, D=D)
+            weighted_excess_val, excess_val, w, new_belief = weighted_excess_gap(
+                lower_bound=lower_bound, upper_bound=upper_bound, a1=a1, o=o,
+                b=b, t=t, gamma=gamma, pi_1_upper_bound=pi_1_upper_bound, pi_2_lower_bound=pi_2_lower_bound,
+                epsilon=epsilon, delta=delta, D=D, S=S, Z=Z, A1=A1, A2=A2, T=T)
             weighted_excess_values.append(weighted_excess_val)
             widths.append(w)
             excess_values.append(excess_val)
@@ -386,7 +398,9 @@ def choose_a_o_for_exploration(A1: np.ndarray, O: np.ndarray, t: int, b: np.ndar
 
 
 def weighted_excess_gap(lower_bound: List, upper_bound: List, a1: int, o: int, b: np.ndarray, t: int,
-                        gamma: float, pi_1_upper_bound, pi_2_lower_bound, epsilon: float, delta: float, D: float) \
+                        gamma: float, pi_1_upper_bound, pi_2_lower_bound,
+                        epsilon: float, delta: float, D: float, S: np.ndarray, Z: np.ndarray, A1: np.ndarray,
+                        A2: np.ndarray, T: np.ndarray) \
         -> Tuple[float, float, float, np.ndarray]:
     """
     Computes the weighted excess gap
@@ -403,12 +417,17 @@ def weighted_excess_gap(lower_bound: List, upper_bound: List, a1: int, o: int, b
     :param epsilon: the epsilon accuracy parameter
     :param delta: the  Lipschitz-continuity parameter
     :param D: the neighborhood parameter
+    :param S: the set of states
+    :param Z: the observation tensor
+    :param A1: the set of actions of player 1
+    :param A2: the set of actions of player 2
+    :param T: the transition tensor
     :return: (weighted excess, excess, width, b_prime)
     """
-    new_belief = next_belief(o=o, a1=a1, b=b, S=S, Z=Z, T=T, pi_2=pi_2_lower_bound)
+    new_belief = next_belief(o=o, a1=a1, b=b, S=S, Z=Z, T=T, pi_2=pi_2_lower_bound, A2=A2)
     excess_val, w = excess(lower_bound=lower_bound, upper_bound=upper_bound, b=new_belief, S=S, epsilon=epsilon,
                            gamma=gamma, t=t, delta=delta, D=D)
-    weight = p_o_given_b_pi_1_pi_2(o=o, b=b, pi_1=pi_1_upper_bound, pi_2=pi_2_lower_bound, S=S, Z=Z, A1=A1, A2=A2)
+    weight = p_o_given_b_pi_1_pi_2(o=o, b=b, pi_1=pi_1_upper_bound, pi_2=pi_2_lower_bound, S=S, Z=Z, A1=A1, A2=A2, T=T)
     return weight * excess_val, excess_val, w, new_belief
 
 
@@ -524,7 +543,8 @@ def initialize_upper_bound(T: np.ndarray, R: np.ndarray, A1: np.ndarray, A2: np.
     return point_set
 
 
-def delta_lipschitz_envelope_of_upper_bound_value(upper_bound: List, b: np.ndarray, delta: float) -> float:
+def delta_lipschitz_envelope_of_upper_bound_value(upper_bound: List, b: np.ndarray, delta: float,
+                                                  S: np.ndarray) -> float:
     """
     This function computes the delta-Lipschitz envelop of the upper bound value at a given belief point b.
 
@@ -532,6 +552,7 @@ def delta_lipschitz_envelope_of_upper_bound_value(upper_bound: List, b: np.ndarr
     :param upper_bound: the upper bound
     :param b: the belief point
     :param delta: the delta parameter for Lipschitz-continuity
+    :param S: the set of states
     :return: the belief value
     """
     problem = pulp.LpProblem("Delta-Lipschitz-Envelope", pulp.LpMinimize)
@@ -848,7 +869,7 @@ def local_lower_bound_update(lower_bound: List, b: np.ndarray, A1: np.ndarray,
     :param gamma: the discount factor in the OS-POSG
     :return: the updated lower bound
     """
-    alpha_vec = lower_bound_backup(lower_bound=lower_bound, b=b, A1=A1, Z=Z, O=O, S=S, T=T, R=R, gamma=gamma)
+    alpha_vec = lower_bound_backup(lower_bound=lower_bound, b=b, A1=A1, Z=Z, O=O, S=S, T=T, R=R, gamma=gamma, A2=A2)
     if not check_duplicate(lower_bound, alpha_vec):
         lower_bound.append(alpha_vec)
     return lower_bound
@@ -856,7 +877,7 @@ def local_lower_bound_update(lower_bound: List, b: np.ndarray, A1: np.ndarray,
 
 def lower_bound_backup(lower_bound: List, b: np.ndarray, A1: np.ndarray, O: np.ndarray,
                        Z: np.ndarray, S: np.ndarray,
-                       T: np.ndarray, R: np.ndarray, gamma: float) -> np.ndarray:
+                       T: np.ndarray, R: np.ndarray, gamma: float, A2: np.ndarray) -> np.ndarray:
     """
     Generates a new alpha-vector for the lower bound
 
@@ -1079,7 +1100,7 @@ def upper_bound_backup(upper_bound: List, b: np.ndarray, A1: np.ndarray, A2: np.
     return belief_value_var
 
 
-def upper_bound_value(upper_bound: List, b: np.ndarray, delta: float) -> float:
+def upper_bound_value(upper_bound: List, b: np.ndarray, delta: float, S: np.ndarray) -> float:
     """
     Computes the upper bound value of a given belief point
 
@@ -1087,9 +1108,10 @@ def upper_bound_value(upper_bound: List, b: np.ndarray, delta: float) -> float:
     :param b: the belief point
     :param delta: the delta-parameter for Lipschitz-continuity
     :param lp: boolean flag that decides whether to use LP to compute the upper bound value or not
+    :param S: the set of states
     :return: the upper bound value
     """
-    return delta_lipschitz_envelope_of_upper_bound_value(upper_bound=upper_bound, b=b, delta=delta)
+    return delta_lipschitz_envelope_of_upper_bound_value(upper_bound=upper_bound, b=b, delta=delta, S=S)
 
 
 def lower_bound_value(lower_bound: List, b: np.ndarray, S: np.ndarray) -> float:
@@ -1110,7 +1132,8 @@ def lower_bound_value(lower_bound: List, b: np.ndarray, S: np.ndarray) -> float:
     return max(alpha_vals)
 
 
-def next_belief(o: int, a1: int, b: np.ndarray, S: np.ndarray, Z: np.ndarray, T: np.ndarray, pi_2: np.ndarray) -> np.ndarray:
+def next_belief(o: int, a1: int, b: np.ndarray, S: np.ndarray, Z: np.ndarray, T: np.ndarray, pi_2: np.ndarray,
+                A2: np.ndarray) -> np.ndarray:
     """
     Computes the next belief using a Bayesian filter
 
@@ -1121,6 +1144,7 @@ def next_belief(o: int, a1: int, b: np.ndarray, S: np.ndarray, Z: np.ndarray, T:
     :param Z: the observation tensor
     :param T: the transition tensor
     :param pi_2: the policy of player 2
+    :param A2: the set of actions of player 2
     :return: the new belief
     """
     b_prime = np.zeros(len(S))
@@ -1170,7 +1194,7 @@ def bayes_filter(s_prime: int, o: int, a1: int, b: np.ndarray, S: np.ndarray, Z:
     return b_prime_s_prime
 
 
-def p_o_given_b_a1_a2(o: int, b: np.ndarray, a1: int, a2: int, S: np.ndarray, Z: np.ndarray) -> float:
+def p_o_given_b_a1_a2(o: int, b: np.ndarray, a1: int, a2: int, S: np.ndarray, Z: np.ndarray, T: np.ndarray) -> float:
     """
     Computes P[o|a,b]
 
@@ -1180,6 +1204,7 @@ def p_o_given_b_a1_a2(o: int, b: np.ndarray, a1: int, a2: int, S: np.ndarray, Z:
     :param a2: the action of player 2
     :param S: the set of states
     :param Z: the observation tensor
+    :param T: the transition tensor
     :return: the probability of observing o when taking action a in belief point b
     """
     prob = 0
@@ -1191,7 +1216,7 @@ def p_o_given_b_a1_a2(o: int, b: np.ndarray, a1: int, a2: int, S: np.ndarray, Z:
 
 
 def p_o_given_b_pi_1_pi_2(o: int, b: np.ndarray, pi_1: np.ndarray, pi_2: np.ndarray, S: np.ndarray,
-                          Z: np.ndarray, A1: np.ndarray, A2: np.ndarray) -> float:
+                          Z: np.ndarray, A1: np.ndarray, A2: np.ndarray, T: np.ndarray) -> float:
     """
     Computes P[o|a,b]
 
@@ -1201,6 +1226,7 @@ def p_o_given_b_pi_1_pi_2(o: int, b: np.ndarray, pi_1: np.ndarray, pi_2: np.ndar
     :param pi_2: the policy of player 2
     :param S: the set of states
     :param Z: the observation tensor
+    :param T: the transition tensor
     :return: the probability of observing o when taking action a in belief point b
     """
     prob = 0
@@ -1265,161 +1291,27 @@ def width(lower_bound: List, upper_bound: List, b: np.ndarray, S: np.ndarray, de
     :param delta: the delta parameter for Lipschitz-continuity
     :return: the width of the bounds
     """
-    ub = upper_bound_value(upper_bound=upper_bound, b=b, delta=delta)
+    ub = upper_bound_value(upper_bound=upper_bound, b=b, delta=delta, S=S)
     lb = lower_bound_value(lower_bound=lower_bound, b=b, S=S)
     return ub - lb
 
 
-def check_duplicate(alpha_set: np.ndarray, alpha: np.ndarray) -> bool:
-    """
-    Check whether alpha vector av is already in set a
-
-    :param alpha_set: the set of alpha vectors
-    :param alpha: the vector to check
-    :return: true or false
-    """
-    for alpha_i in alpha_set:
-        if np.allclose(alpha_i, alpha):
-            return True
-    return False
-
-
-def prune_lower_bound(lower_bound: List, S: np.ndarray) -> np.ndarray:
-    """
-    Lark's filtering algorithm to prune the lower bound, (Cassandra, Littman, Zhang, 1997)
-
-    :param lower_bound: the current lower bound
-    :param S: the set of states
-    :return: the pruned lower bound
-    """
-    # dirty set
-    F = set()
-    for i in range(len(lower_bound)):
-        F.add(tuple(lower_bound[i]))
-
-    # clean set
-    Q = []
-
-    for s in S:
-        max_alpha_val_s = -np.inf
-        max_alpha_vec_s = None
-        for alpha_vec in F:
-            if alpha_vec[s] > max_alpha_val_s:
-                max_alpha_val_s = alpha_vec[s]
-                max_alpha_vec_s = alpha_vec
-        if max_alpha_vec_s is not None and len(F) > 0:
-            # Q.update({max_alpha_vec_s})
-            Q.append(np.array(list(max_alpha_vec_s)))
-            F.remove(max_alpha_vec_s)
-    while F:
-        alpha_vec = F.pop()  # just to get a reference
-        F.add(alpha_vec)
-        x = check_dominance_lp(alpha_vec, np.array(Q))
-        if x is None:
-            F.remove(alpha_vec)
-        else:
-            max_alpha_val = -np.inf
-            max_alpha_vec = None
-            for phi in F:
-                phi_vec = np.array(list(phi))
-                if phi_vec.dot(alpha_vec) > max_alpha_val:
-                    max_alpha_val = phi_vec.dot(alpha_vec)
-                    max_alpha_vec = phi_vec
-            Q.append(max_alpha_vec)
-            F.remove(tuple(list(max_alpha_vec)))
-    return Q
-
-
-def check_dominance_lp(alpha_vec: np.ndarray, Q: np.ndarray):
-    """
-    Uses LP to check whether a given alpha vector is dominated or not (Cassandra, Littman, Zhang, 1997)
-
-    :param alpha_vec: the alpha vector to check
-    :param Q: the set of vectors to check dominance against
-    :return: None if dominated, otherwise return the vector
-    """
-
-    problem = pulp.LpProblem("AlphaDominance", pulp.LpMaximize)
-
-    # --- Decision Variables ----
-
-    # x
-    x_vars = []
-    for i in range(len(alpha_vec)):
-        x_var_i = pulp.LpVariable("x_" + str(i), lowBound=0, upBound=1, cat=pulp.LpContinuous)
-        x_vars.append(x_var_i)
-
-    # delta
-    delta = pulp.LpVariable("delta", lowBound=None, upBound=None, cat=pulp.LpContinuous)
-
-    # --- Objective Function ----
-    problem += delta, "maximize delta"
-
-    # --- The constraints ---
-
-    # x sum to 1
-    x_sum = 0
-    for i in range(len(x_vars)):
-        x_sum += x_vars[i]
-    problem += x_sum == 1, "XSumWeights"
-
-    # alpha constraints
-    for i, alpha_vec_prime in enumerate(Q):
-        x_dot_alpha_sum = 0
-        x_dot_alpha_prime_sum = 0
-        for j in range(len(alpha_vec)):
-            x_dot_alpha_sum += x_vars[j] * alpha_vec[j]
-            x_dot_alpha_prime_sum += x_vars[j] * alpha_vec_prime[j]
-        problem += x_dot_alpha_sum >= delta + x_dot_alpha_prime_sum, "alpha_constraint _" + str(i)
-
-    problem.solve(pulp.PULP_CBC_CMD(msg=0))
-
-    delta = delta.varValue
-    if delta > 0:
-        return alpha_vec
-    else:
-        return None
-
-
-def prune_upper_bound(upper_bound: List, delta: float) -> List:
+def prune_upper_bound(upper_bound: List, delta: float, S: np.ndarray) -> List:
     """
     Prunes the points in the upper bound
 
     :param upper_bound: the current upper bound
     :param delta: the delta parameter for lipschitz-continuity
+    :param S: the set of states
     :return: the pruned upper bound
     """
     pruned_upper_bound_point_set = []
 
     for point in upper_bound:
-        true_val = upper_bound_value(upper_bound=upper_bound, b=point[0], delta=delta)
+        true_val = upper_bound_value(upper_bound=upper_bound, b=point[0], delta=delta, S=S)
         if not (point[1] > true_val):
             pruned_upper_bound_point_set.append(point)
 
     return pruned_upper_bound_point_set
 
 
-def set_seed(seed: float) -> None:
-    """
-    Deterministic seed config
-
-    :param seed: random seed for the PRNG
-    :return: None
-    """
-    random.seed(seed)
-    np.random.seed(seed)
-
-
-if __name__ == '__main__':
-    Z = stopping_game.observation_tensor()
-    R = stopping_game.reward_tensor()
-    T = stopping_game.transition_tensor()
-    A1, _ = stopping_game.player_1_actions()
-    A2, _ = stopping_game.player_2_actions()
-    O, _ = stopping_game.observations()
-    S, _ = stopping_game.states()
-    b0 = stopping_game.initial_belief()
-    set_seed(1521245)
-    hsvi_os_posg(O=O, Z=Z, R=R, T=T, A1=A1, A2=A2, S=S, gamma=0.9, b0=b0, epsilon=0.01,
-                 prune_frequency=100, verbose=True, simulation_frequency=1, simulate_horizon=100,
-                 number_of_simulations=50, D=None)
