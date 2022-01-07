@@ -92,19 +92,6 @@ def reward_tensor() -> np.ndarray:
     return R
 
 
-def mdp_reward_matrix_p2(P1_strategy: np.ndarray, A1: List) -> np.ndarray:
-    """
-    :return: return a |A2|x|S| matrix
-    """
-    R = reward_tensor()
-    R_mdp = np.zeros(R[0].shape)
-    for a1 in A1:
-        R_i = R[a1]
-        R_i = R_i*-P1_strategy[a1]
-        R_mdp = R_mdp + R_i
-    return R_mdp
-
-
 def transition_tensor() -> np.ndarray:
     """
     :return: a |A1|x|A2||S|^2 tensor
@@ -133,20 +120,6 @@ def transition_tensor() -> np.ndarray:
             ]
         ]
     )
-
-
-def mdp_transition_tensor_p2(P1_strategy: np.ndarray, A1: List) -> np.ndarray:
-    """
-    :return: a |A2||S|^2 tensor
-    """
-    T = transition_tensor()
-    T_mdp = np.zeros(T[0].shape)
-    for a1 in A1:
-        T_i = T[a1]
-        T_i = T_i * P1_strategy[a1]
-        T_mdp = T_mdp + T_i
-
-    return T_mdp
 
 
 def initial_belief() -> np.ndarray:

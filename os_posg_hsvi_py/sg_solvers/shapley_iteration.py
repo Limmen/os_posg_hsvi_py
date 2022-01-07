@@ -87,9 +87,9 @@ def compute_matrix_game_value(A: np.ndarray, A1: np.ndarray, A2: np.ndarray, max
     return value, optimal_strategy
 
 
-def shapley_iteration(S: np.ndarray, A1: np.ndarray, A2: np.ndarray, R: np.ndarray, T: np.ndarray,
-                      gamma : float = 1, max_iterations : int = 500,
-                      delta_threshold : float = 0.1, log = False) -> Tuple[np.ndarray, np.ndarray,
+def si(S: np.ndarray, A1: np.ndarray, A2: np.ndarray, R: np.ndarray, T: np.ndarray,
+       gamma : float = 1, max_iterations : int = 500,
+       delta_threshold : float = 0.1, log = False) -> Tuple[np.ndarray, np.ndarray,
                                                                            np.ndarray, np.ndarray]:
     """
     Shapley Iteration (L. Shapley 1953)

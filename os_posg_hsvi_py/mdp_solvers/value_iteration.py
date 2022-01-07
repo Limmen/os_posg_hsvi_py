@@ -25,8 +25,8 @@ def one_step_lookahead(state, V, num_actions, num_states, T, discount_factor, R)
     return A
 
 
-def value_iteration(T: np.ndarray, num_states: int, num_actions: int, R: np.ndarray,
-                    theta=0.0001, discount_factor=1.0) -> Tuple[np.ndarray, np.ndarray]:
+def vi(T: np.ndarray, num_states: int, num_actions: int, R: np.ndarray,
+       theta=0.0001, discount_factor=1.0) -> Tuple[np.ndarray, np.ndarray]:
     """
     An implementation of the Value Iteration algorithm
     :param T: the transition kernel T

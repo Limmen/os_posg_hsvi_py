@@ -11,3 +11,4 @@ def set_seed(seed: float) -> None:
     """
     random.seed(seed)
     np.random.seed(seed)
+

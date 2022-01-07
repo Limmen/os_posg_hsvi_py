@@ -1,18 +1,17 @@
 from typing import List, Tuple
 import numpy as np
 import pulp
-from instances import stopping_intrusion_game_os_posg as stopping_game
-from sg_solvers import shapley_iteration_fully_observed as shapley
-from mdp_solvers import vi as vi
-import common.pruning
+from os_posg_hsvi_py.sg_solvers import shapley_iteration as shapley_iteration
+from os_posg_hsvi_py.mdp_solvers import value_iteration as value_iteration
+import os_posg_hsvi_py.common.pruning as pruning
 import itertools
 
 
-def hsvi_os_posg(O: np.ndarray, Z: np.ndarray, R: np.ndarray, T: np.ndarray, A1: np.ndarray,
-                 A2: np.ndarray, S: np.ndarray, gamma: float, b0: np.ndarray,
-                 epsilon: float, prune_frequency: int = 10, verbose=False,
-                 simulation_frequency: int = 10, simulate_horizon: int = 10, number_of_simulations: int = 10,
-                 D: float = None):
+def hsvi(O: np.ndarray, Z: np.ndarray, R: np.ndarray, T: np.ndarray, A1: np.ndarray,
+         A2: np.ndarray, S: np.ndarray, gamma: float, b0: np.ndarray,
+         epsilon: float, prune_frequency: int = 10, verbose=False,
+         simulation_frequency: int = 10, simulate_horizon: int = 10, number_of_simulations: int = 10,
+         D: float = None):
     """
     Heuristic Search Value Iteration for zero-sum OS-POSGs (Horak, Bosansky, Pechoucek, 2017)
 
@@ -68,7 +67,7 @@ def hsvi_os_posg(O: np.ndarray, Z: np.ndarray, R: np.ndarray, T: np.ndarray, A1:
         if iteration > 1 and iteration % prune_frequency == 0:
             size_before_lower_bound = len(lower_bound)
             size_before_upper_bound = len(upper_bound)
-            lower_bound = common.pruning.prune_lower_bound(lower_bound=lower_bound, S=S)
+            lower_bound = pruning.prune_lower_bound(lower_bound=lower_bound, S=S)
             upper_bound = prune_upper_bound(upper_bound=upper_bound, delta=delta, S=S)
             if verbose:
                 print(f"Pruning, LB before:{size_before_lower_bound},after:{len(lower_bound)}, "
@@ -468,13 +467,42 @@ def value_of_p1_strategy_static(S: np.ndarray, A1: np.ndarray, A2: np.ndarray, g
     :param b0: the initial belief
     :return: the value vector and the value given the initial belief b0.
     """
-    R_mdp = stopping_game.mdp_reward_matrix_p2(P1_strategy=P1_strategy, A1=A1)
-    T_mdp = stopping_game.mdp_transition_tensor_p2(P1_strategy=P1_strategy, A1=A1)
-    V, _ = vi.value_iteration(T=T_mdp, num_states=len(S), num_actions=len(A2), R=R_mdp,
+    R_mdp = mdp_reward_matrix_p2(P1_strategy=P1_strategy, A1=A1)
+    T_mdp = mdp_transition_tensor_p2(P1_strategy=P1_strategy, A1=A1)
+    V, _ = value_iteration.vi(T=T_mdp, num_states=len(S), num_actions=len(A2), R=R_mdp,
                               theta=0.0001, discount_factor=gamma)
     V = np.array(V)
     b0 = np.array(b0)
     return V, b0.dot(V)
+
+
+def mdp_reward_matrix_p2(R: np.ndarray, P1_strategy: np.ndarray, A1: List) -> np.ndarray:
+    """
+    Creates the reward matrix of player 2 induced by a fixed policy of player 1 (a MDP)
+
+    :return: return a |A2|x|S| matrix
+    """
+    R_mdp = np.zeros(R[0].shape)
+    for a1 in A1:
+        R_i = R[a1]
+        R_i = R_i*-P1_strategy[a1]
+        R_mdp = R_mdp + R_i
+    return R_mdp
+
+
+def mdp_transition_tensor_p2(T: np.ndarray, P1_strategy: np.ndarray, A1: List) -> np.ndarray:
+    """
+    Creates the transition tensor induced by a fixed policy of player 1 (MDP)
+
+    :return: a |A2||S|^2 tensor
+    """
+    T_mdp = np.zeros(T[0].shape)
+    for a1 in A1:
+        T_i = T[a1]
+        T_i = T_i * P1_strategy[a1]
+        T_mdp = T_mdp + T_i
+
+    return T_mdp
 
 
 def valcomp(pi_1: np.ndarray, alpha_bar: np.ndarray, s: int, A1: np.ndarray, A2: np.ndarray,
@@ -534,7 +562,7 @@ def initialize_upper_bound(T: np.ndarray, R: np.ndarray, A1: np.ndarray, A2: np.
     :param gamma: the discount factor
     :return: the initial upper bound
     """
-    V, maximin_strategies, minimax_strategies, auxillary_games = shapley.shapley_iteration(
+    V, maximin_strategies, minimax_strategies, auxillary_games = shapley_iteration.si(
         S=S, A1=A1, A2=A2, T=T, R=R, gamma=gamma, max_iterations=1000, delta_threshold=0.001, log=False)
     point_set = []
     for s in S:
@@ -870,7 +898,7 @@ def local_lower_bound_update(lower_bound: List, b: np.ndarray, A1: np.ndarray,
     :return: the updated lower bound
     """
     alpha_vec = lower_bound_backup(lower_bound=lower_bound, b=b, A1=A1, Z=Z, O=O, S=S, T=T, R=R, gamma=gamma, A2=A2)
-    if not check_duplicate(lower_bound, alpha_vec):
+    if not pruning.check_duplicate(lower_bound, alpha_vec):
         lower_bound.append(alpha_vec)
     return lower_bound
 

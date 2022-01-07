@@ -1,8 +1,8 @@
 from typing import List, Tuple
 import numpy as np
 import pulp
-import mdp_solvers.vi as vi
-import common.pruning
+import os_posg_hsvi_py.mdp_solvers.value_iteration as value_iteration
+import os_posg_hsvi_py.common.pruning as pruning
 import math
 
 
@@ -58,7 +58,7 @@ def hsvi(O: np.ndarray, Z: np.ndarray, R: np.ndarray, T: np.ndarray, A: np.ndarr
         if iteration > 1 and iteration % prune_frequency == 0:
             size_before_lower_bound=len(lower_bound)
             size_before_upper_bound = len(upper_bound[0])
-            lower_bound = common.pruning.prune_lower_bound(lower_bound=lower_bound, S=S)
+            lower_bound = pruning.prune_lower_bound(lower_bound=lower_bound, S=S)
             upper_bound = prune_upper_bound(upper_bound=upper_bound, S=S, lp=lp)
             if verbose:
                 print(f"Pruning, LB before:{size_before_lower_bound},after:{len(lower_bound)}, "
@@ -170,7 +170,7 @@ def initialize_upper_bound(T: np.ndarray, A: np.ndarray, S: np.ndarray, gamma: f
     :param gamma: the discount factor
     :return: the initialized upper bound
     """
-    V, pi = vi.value_iteration(T=T, num_states=len(S), num_actions=len(A), R=R, theta=0.0001, discount_factor=gamma)
+    V, pi = value_iteration.vi(T=T, num_states=len(S), num_actions=len(A), R=R, theta=0.0001, discount_factor=gamma)
     print("Initial state values: V:{}".format(V))
     point_set = []
     for s in S:
@@ -282,7 +282,7 @@ def local_lower_bound_update(lower_bound: List, b: np.ndarray, A: np.ndarray, O:
     :return: the updated lower bound
     """
     beta = lower_bound_backup(lower_bound=lower_bound, b=b, A=A, Z=Z, O=O, S=S, T=T, R=R, gamma=gamma)
-    if not check_duplicate(lower_bound, beta):
+    if not pruning.check_duplicate(lower_bound, beta):
         lower_bound.append(beta)
     return lower_bound
 
@@ -684,21 +684,6 @@ def q(b: np.ndarray, a: int, lower_bound: List, upper_bound: Tuple[List, List], 
                     b[s] * T[a][s][s_prime] * Z[a][s_prime][o] * future_val
         Q_val += immediate_r + expected_future_rew* gamma
     return Q_val
-
-
-def check_duplicate(alpha_set: List, alpha: np.ndarray) -> bool:
-    """
-    Check whether alpha vector av is already in set a
-
-    :param alpha_set: the set of alpha vectors
-    :param alpha: the vector to check
-    :return: true or false
-    """
-    for alpha_i in alpha_set:
-        if np.allclose(alpha_i, alpha):
-            return True
-    return False
-
 
 def prune_upper_bound(upper_bound: Tuple[List, List], S: np.ndarray, lp: bool) -> Tuple[List, List]:
     """
