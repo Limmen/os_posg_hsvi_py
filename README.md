@@ -57,8 +57,8 @@ pip install -e .
 
 ```python
 import os_posg_hsvi_py.instances.stopping_intrusion_game_os_posg as stopping_game
-import os_posg_hsvi_py.util.util
-from os_posg_hsvi_py import os_posg_solvers
+import os_posg_hsvi_py.util.util as util
+import os_posg_hsvi_py.os_posg_solvers.os_posg_hsvi as os_posg_hsvi
 
 Z = stopping_game.observation_tensor()
 R = stopping_game.reward_tensor()
@@ -68,11 +68,10 @@ A2, _ = stopping_game.player_2_actions()
 O, _ = stopping_game.observations()
 S, _ = stopping_game.states()
 b0 = stopping_game.initial_belief()
-os_posg_hsvi_py.util.util.set_seed(1521245)
-os_posg_hsvi_py.os_posg_solvers.os_posg_hsvi.hsvi(O=O, Z=Z, R=R, T=T, A1=A1, A2=A2, S=S, gamma=0.9, b0=b0, epsilon=0.01,
-                                                  prune_frequency=100, verbose=True, simulation_frequency=1,
-                                                  simulate_horizon=100,
-                                                  number_of_simulations=50, D=None)
+util.set_seed(1521245)  
+os_posg_hsvi.hsvi(O=O, Z=Z, R=R, T=T, A1=A1, A2=A2, S=S, gamma=0.9, b0=b0, epsilon=0.01,
+                  prune_frequency=100, verbose=True, simulation_frequency=1, simulate_horizon=100,
+                  number_of_simulations=50, D=None)
 ```
 
 ## Contributions
