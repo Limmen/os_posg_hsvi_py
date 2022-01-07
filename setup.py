@@ -14,7 +14,6 @@ setup(name='os_posg_hsvi_py',
           'Development Status :: 3 - Alpha',
           'Intended Audience :: Developers',
           'Topic :: Software Development :: Build Tools',
-          'License :: Creative Commons Attribution-ShareAlike 4.0 International',
           'Programming Language :: Python :: 3.8'
       ]
       )

@@ -41,6 +41,9 @@ abstractNote={ &lt;p&gt; Security problems can be modeled as two-player partiall
 
 ### Install from pypi
 
+```bash
+pip install os-posg-hsvi-py==0.0.1
+```
 
 ### Local installation
 
